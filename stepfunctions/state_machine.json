@@ -1,0 +1,302 @@
+{
+  "Comment": "Security metrics pipeline — runs 4 collectors in parallel daily, then aggregates results into 6 metrics for the CISO dashboard.",
+  "StartAt": "CollectAllSources",
+  "States": {
+    "CollectAllSources": {
+      "Type": "Parallel",
+      "Comment": "Run all 4 collectors simultaneously. Total time = slowest collector (Wiz ~25 min), not sum of all. Without parallel this would take ~34 min sequentially.",
+      "Branches": [
+        {
+          "Comment": "Branch 1 — Wiz Lambda",
+          "StartAt": "CollectWiz",
+          "States": {
+            "CollectWiz": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:us-east-1:ACCOUNT_ID:function:security-collect-wiz",
+              "Parameters": {
+                "bucket.$": "$.bucket"
+              },
+              "Comment": "Wiz Lambda handles its own pagination and checkpointing internally. Step Functions retry here handles Lambda infrastructure failures only (Lambda.ServiceException, throttling). API-level retries (429, 5xx) are handled inside the Lambda code itself.",
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException",
+                    "Lambda.TooManyRequestsException"
+                  ],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "ResultPath": "$.error",
+                  "Next": "WizFailed"
+                }
+              ],
+              "End": true
+            },
+            "WizFailed": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::sns:publish",
+              "Comment": "Notify security team that Wiz collection failed. Type: Succeed (not Fail) is intentional — if this branch returned Fail, the entire Parallel state would fail, losing all data from the other 3 branches. Type: Succeed lets the Parallel state complete and the Aggregation Lambda run with whatever data arrived.",
+              "Parameters": {
+                "TopicArn": "arn:aws:sns:us-east-1:ACCOUNT_ID:security-pipeline-alerts",
+                "Message": "Wiz collector failed. Pipeline will continue with available sources. Check CloudWatch logs for details.",
+                "Subject": "Security Pipeline — Wiz Collection Failed"
+              },
+              "ResultPath": "$.notification",
+              "Next": "WizSkipped"
+            },
+            "WizSkipped": {
+              "Type": "Pass",
+              "Comment": "Pass a structured result to the Parallel output so the Aggregation Lambda knows Wiz was skipped. This result is included in the Parallel state output array alongside results from successful branches.",
+              "Result": {
+                "source": "wiz",
+                "status": "failed",
+                "finding_count": 0
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "Comment": "Branch 2 — Sentinel Lambda",
+          "StartAt": "CollectSentinel",
+          "States": {
+            "CollectSentinel": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:us-east-1:ACCOUNT_ID:function:security-collect-sentinel",
+              "Parameters": {
+                "bucket.$": "$.bucket"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException",
+                    "Lambda.TooManyRequestsException"
+                  ],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "ResultPath": "$.error",
+                  "Next": "SentinelFailed"
+                }
+              ],
+              "End": true
+            },
+            "SentinelFailed": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::sns:publish",
+              "Parameters": {
+                "TopicArn": "arn:aws:sns:us-east-1:ACCOUNT_ID:security-pipeline-alerts",
+                "Message": "Sentinel collector failed. Pipeline will continue with available sources. Check CloudWatch logs for details.",
+                "Subject": "Security Pipeline — Sentinel Collection Failed"
+              },
+              "ResultPath": "$.notification",
+              "Next": "SentinelSkipped"
+            },
+            "SentinelSkipped": {
+              "Type": "Pass",
+              "Result": {
+                "source": "sentinel",
+                "status": "failed",
+                "finding_count": 0
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "Comment": "Branch 3 — Defender Lambda",
+          "StartAt": "CollectDefender",
+          "States": {
+            "CollectDefender": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:us-east-1:ACCOUNT_ID:function:security-collect-defender",
+              "Parameters": {
+                "bucket.$": "$.bucket"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException",
+                    "Lambda.TooManyRequestsException"
+                  ],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "ResultPath": "$.error",
+                  "Next": "DefenderFailed"
+                }
+              ],
+              "End": true
+            },
+            "DefenderFailed": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::sns:publish",
+              "Parameters": {
+                "TopicArn": "arn:aws:sns:us-east-1:ACCOUNT_ID:security-pipeline-alerts",
+                "Message": "Defender collector failed. Pipeline will continue with available sources. Check CloudWatch logs for details.",
+                "Subject": "Security Pipeline — Defender Collection Failed"
+              },
+              "ResultPath": "$.notification",
+              "Next": "DefenderSkipped"
+            },
+            "DefenderSkipped": {
+              "Type": "Pass",
+              "Result": {
+                "source": "defender",
+                "status": "failed",
+                "finding_count": 0
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "Comment": "Branch 4 — Security Hub Lambda",
+          "StartAt": "CollectSecurityHub",
+          "States": {
+            "CollectSecurityHub": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:us-east-1:ACCOUNT_ID:function:security-collect-securityhub",
+              "Parameters": {
+                "bucket.$": "$.bucket"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException",
+                    "Lambda.TooManyRequestsException"
+                  ],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "ResultPath": "$.error",
+                  "Next": "SecurityHubFailed"
+                }
+              ],
+              "End": true
+            },
+            "SecurityHubFailed": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::sns:publish",
+              "Parameters": {
+                "TopicArn": "arn:aws:sns:us-east-1:ACCOUNT_ID:security-pipeline-alerts",
+                "Message": "Security Hub collector failed. Pipeline will continue with available sources. Check CloudWatch logs for details.",
+                "Subject": "Security Pipeline — Security Hub Collection Failed"
+              },
+              "ResultPath": "$.notification",
+              "Next": "SecurityHubSkipped"
+            },
+            "SecurityHubSkipped": {
+              "Type": "Pass",
+              "Result": {
+                "source": "securityhub",
+                "status": "failed",
+                "finding_count": 0
+              },
+              "End": true
+            }
+          }
+        }
+      ],
+      "Next": "AggregateMetrics",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "PipelineFailed"
+        }
+      ]
+    },
+    "AggregateMetrics": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:ACCOUNT_ID:function:security-aggregate-metrics",
+      "Comment": "Reads S3 data from whichever collectors succeeded. Validates Wiz chunks via manifest. Normalises all sources. Calculates 6 metrics. Writes COMPLETE or PARTIAL report to DynamoDB and S3.",
+      "Parameters": {
+        "bucket.$": "$.bucket"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "PipelineFailed"
+        }
+      ],
+      "Next": "PipelineSucceeded"
+    },
+    "PipelineSucceeded": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Comment": "Notify security team that the pipeline completed. The report may be COMPLETE or PARTIAL — the Aggregation Lambda includes this in its output which is passed to this state.",
+      "Parameters": {
+        "TopicArn": "arn:aws:sns:us-east-1:ACCOUNT_ID:security-pipeline-alerts",
+        "Message.$": "States.Format('Security pipeline completed successfully. Date: {}. Total findings: {}. Report type: {}', $.date, $.total_findings, $.report_type)",
+        "Subject": "Security Pipeline — Daily Report Ready"
+      },
+      "End": true
+    },
+    "PipelineFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Comment": "Critical failure — the Aggregation Lambda itself failed, not just a collector. No report was produced. Security team must investigate.",
+      "Parameters": {
+        "TopicArn": "arn:aws:sns:us-east-1:ACCOUNT_ID:security-pipeline-alerts",
+        "Message": "CRITICAL — Security pipeline failed at the aggregation step. No report produced for today. Immediate investigation required. Check CloudWatch logs for the security-aggregate-metrics Lambda.",
+        "Subject": "CRITICAL — Security Pipeline Failed"
+      },
+      "End": true
+    }
+  }
+}
