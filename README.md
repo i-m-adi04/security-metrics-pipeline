@@ -57,6 +57,6 @@ Repository structure
 /stepfunctions
   state_machine.json              — Step Functions state machine definition
 
-/docs
+
   architecture_diagram.png        — pipeline architecture diagram
  
