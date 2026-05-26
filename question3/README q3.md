@@ -63,7 +63,7 @@ az policy remediation create \
   --resource-discovery-mode ExistingNonCompliant
 
 Files in This Folder
-FileDescriptionazure_policy_q3.jsonThe complete Azure Policy definitionarchitecture_q3.htmlArchitecture diagram — open in any browserREADME.mdThis document
+FileDescription azure_policy_q3.jsonThe complete Azure Policy definition architecture_q3 diagram — open in any browser README.mdThis document
 
 What Happens After Deployment — End to End Story
 Monday 9AM: A developer deploys a new payment service application. Under time pressure, they forget to add a managed identity in their Bicep file. The deployment succeeds — Azure does not block it.
