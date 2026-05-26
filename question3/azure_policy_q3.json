@@ -1,0 +1,137 @@
+{
+  "name": "deploy-uami-appservice-missing-identity",
+  "type": "Microsoft.Authorization/policyDefinitions",
+  "properties": {
+    "displayName": "Deploy managed identity to App Services missing UserAssigned identity",
+    "description": "Detects Azure App Services that have no UserAssigned managed identity configured and automatically creates and attaches one. Tags the App Service with 'security-remediation: auto-managed-identity' for audit tracking. Supports exemption via tag 'policy-exempt: managed-identity-required' for teams with approved SystemAssigned-only architectures.",
+    "policyType": "Custom",
+    "mode": "Indexed",
+    "metadata": {
+      "category": "Security",
+      "version": "1.0.0",
+      "author": "Cloud Security Team"
+    },
+    "policyRule": {
+      "if": {
+        "allOf": [
+          {
+            "field": "type",
+            "equals": "Microsoft.Web/sites"
+          },
+          {
+            "anyOf": [
+              {
+                "field": "identity.type",
+                "exists": false
+              },
+              {
+                "allOf": [
+                  {
+                    "field": "identity.type",
+                    "notContains": "UserAssigned"
+                  },
+                  {
+                    "field": "tags['policy-exempt']",
+                    "notEquals": "managed-identity-required"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "then": {
+        "effect": "DeployIfNotExists",
+        "details": {
+          "type": "Microsoft.Web/sites",
+          "name": "[field('name')]",
+          "roleDefinitionIds": [
+            "/providers/Microsoft.Authorization/roleDefinitions/b24988ac-6180-42a0-ab88-20f7382dd24c",
+            "/providers/Microsoft.Authorization/roleDefinitions/f1a07417-d97a-45cb-824c-7a7467783830"
+          ],
+          "existenceCondition": {
+            "field": "identity.type",
+            "contains": "UserAssigned"
+          },
+          "deployment": {
+            "properties": {
+              "mode": "incremental",
+              "parameters": {
+                "appServiceName": {
+                  "value": "[field('name')]"
+                },
+                "location": {
+                  "value": "[field('location')]"
+                },
+                "resourceGroupName": {
+                  "value": "[resourceGroup().name]"
+                }
+              },
+              "template": {
+                "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                "contentVersion": "1.0.0.0",
+                "parameters": {
+                  "appServiceName": {
+                    "type": "string"
+                  },
+                  "location": {
+                    "type": "string"
+                  },
+                  "resourceGroupName": {
+                    "type": "string"
+                  }
+                },
+                "variables": {
+                  "identityName": "[concat('uami-', parameters('appServiceName'), '-auto')]"
+                },
+                "resources": [
+                  {
+                    "comments": "Step 1 — Create the user-assigned managed identity in the same resource group and location as the App Service. Must complete before Step 2 can run.",
+                    "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+                    "apiVersion": "2023-01-31",
+                    "name": "[variables('identityName')]",
+                    "location": "[parameters('location')]",
+                    "tags": {
+                      "created-by": "azure-policy-auto-remediation",
+                      "owner-app-service": "[parameters('appServiceName')]"
+                    }
+                  },
+                  {
+                    "comments": "Step 2 — Attach the newly created identity to the App Service and add the audit tag. dependsOn ensures Step 1 is complete before this runs — cannot attach an identity that does not exist yet.",
+                    "type": "Microsoft.Web/sites",
+                    "apiVersion": "2023-01-01",
+                    "name": "[parameters('appServiceName')]",
+                    "location": "[parameters('location')]",
+                    "dependsOn": [
+                      "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]"
+                    ],
+                    "tags": {
+                      "security-remediation": "auto-managed-identity"
+                    },
+                    "identity": {
+                      "type": "UserAssigned",
+                      "userAssignedIdentities": {
+                        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]": {}
+                      }
+                    },
+                    "properties": {}
+                  }
+                ],
+                "outputs": {
+                  "managedIdentityName": {
+                    "type": "string",
+                    "value": "[variables('identityName')]"
+                  },
+                  "managedIdentityId": {
+                    "type": "string",
+                    "value": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
